@@ -1,0 +1,331 @@
+import serial
+import tkinter as tk
+from tkinter import messagebox
+import time
+import threading
+
+# ==============================
+# SETTINGS
+# ==============================
+
+SERIAL_PORT = "COM3"
+BAUD_RATE = 9600
+
+# Change this depending on your chair/sensor position
+BAD_POSTURE_DISTANCE = 30.0
+
+# Distance must go below this to unlock automatically
+GOOD_POSTURE_DISTANCE = 27.0
+
+WARNING_TIME = 15
+
+# Change this before using the project
+PARENT_PASSWORD = "1234"
+
+
+# ==============================
+# SERIAL CONNECTION
+# ==============================
+
+arduino = serial.Serial(
+    SERIAL_PORT,
+    BAUD_RATE,
+    timeout=1
+)
+
+time.sleep(2)
+
+
+# ==============================
+# GLOBAL VARIABLES
+# ==============================
+
+current_distance = 0
+warning_active = False
+screen_locked = False
+
+
+# ==============================
+# MAIN WINDOW
+# ==============================
+
+root = tk.Tk()
+root.withdraw()
+
+
+# ==============================
+# WARNING WINDOW
+# ==============================
+
+def posture_warning():
+
+    global warning_active
+
+    if warning_active or screen_locked:
+        return
+
+    warning_active = True
+
+    warning = tk.Toplevel(root)
+
+    warning.title("Posture Warning")
+
+    warning.geometry("500x250")
+
+    warning.attributes("-topmost", True)
+
+    warning.resizable(False, False)
+
+    title = tk.Label(
+        warning,
+        text="⚠ POSTURE WARNING",
+        font=("Arial", 22, "bold")
+    )
+
+    title.pack(pady=20)
+
+    message = tk.Label(
+        warning,
+        text="You're sitting too far from the sensor.\n"
+             "Correct your posture before the timer reaches zero.",
+        font=("Arial", 13)
+    )
+
+    message.pack(pady=10)
+
+    timer_label = tk.Label(
+        warning,
+        text="15",
+        font=("Arial", 36, "bold")
+    )
+
+    timer_label.pack(pady=10)
+
+    start_time = time.time()
+
+    def countdown():
+
+        global warning_active
+
+        if not warning.winfo_exists():
+            return
+
+        # Posture fixed
+        if current_distance <= GOOD_POSTURE_DISTANCE:
+
+            warning_active = False
+
+            warning.destroy()
+
+            return
+
+        elapsed = int(time.time() - start_time)
+
+        remaining = WARNING_TIME - elapsed
+
+        timer_label.config(
+            text=str(max(0, remaining))
+        )
+
+        if remaining <= 0:
+
+            warning_active = False
+
+            warning.destroy()
+
+            lock_screen()
+
+        else:
+
+            warning.after(200, countdown)
+
+    countdown()
+
+
+# ==============================
+# FULLSCREEN POSTURE SCREEN
+# ==============================
+
+def lock_screen():
+
+    global screen_locked
+
+    if screen_locked:
+        return
+
+    screen_locked = True
+
+    lock = tk.Toplevel(root)
+
+    lock.attributes("-fullscreen", True)
+    lock.attributes("-topmost", True)
+
+    lock.title("Correct Your Posture")
+
+    heading = tk.Label(
+        lock,
+        text="PLEASE CORRECT YOUR POSTURE",
+        font=("Arial", 36, "bold")
+    )
+
+    heading.pack(pady=80)
+
+    info = tk.Label(
+        lock,
+        text="The screen will return automatically\n"
+             "when your posture is corrected.",
+        font=("Arial", 20)
+    )
+
+    info.pack(pady=20)
+
+    distance_label = tk.Label(
+        lock,
+        text="",
+        font=("Arial", 18)
+    )
+
+    distance_label.pack(pady=20)
+
+    password_label = tk.Label(
+        lock,
+        text="Parent override password:",
+        font=("Arial", 16)
+    )
+
+    password_label.pack(pady=(40, 5))
+
+    password_entry = tk.Entry(
+        lock,
+        show="*",
+        font=("Arial", 18),
+        justify="center"
+    )
+
+    password_entry.pack()
+
+    status_label = tk.Label(
+        lock,
+        text="",
+        font=("Arial", 14)
+    )
+
+    status_label.pack(pady=10)
+
+    def check_password():
+
+        global screen_locked
+
+        if password_entry.get() == PARENT_PASSWORD:
+
+            screen_locked = False
+
+            lock.destroy()
+
+        else:
+
+            status_label.config(
+                text="Incorrect password"
+            )
+
+            password_entry.delete(0, tk.END)
+
+    button = tk.Button(
+        lock,
+        text="Parent Override",
+        font=("Arial", 16),
+        command=check_password
+    )
+
+    button.pack(pady=15)
+
+    def check_posture():
+
+        global screen_locked
+
+        if not lock.winfo_exists():
+            return
+
+        distance_label.config(
+            text=f"Current distance: {current_distance:.1f} cm"
+        )
+
+        # Automatically unlock when posture is fixed
+        if current_distance <= GOOD_POSTURE_DISTANCE:
+
+            screen_locked = False
+
+            lock.destroy()
+
+            return
+
+        lock.after(200, check_posture)
+
+    check_posture()
+
+
+# ==============================
+# READ ARDUINO
+# ==============================
+
+def read_arduino():
+
+    global current_distance
+
+    while True:
+
+        try:
+
+            data = arduino.readline().decode().strip()
+
+            if data:
+
+                distance = float(data)
+
+                current_distance = distance
+
+                print(
+                    f"Distance: {distance:.1f} cm"
+                )
+
+                if (
+                    distance > BAD_POSTURE_DISTANCE
+                    and not warning_active
+                    and not screen_locked
+                ):
+
+                    root.after(
+                        0,
+                        posture_warning
+                    )
+
+        except ValueError:
+            pass
+
+        except Exception as error:
+
+            print(
+                "Arduino error:",
+                error
+            )
+
+            time.sleep(1)
+
+
+# ==============================
+# START SERIAL THREAD
+# ==============================
+
+thread = threading.Thread(
+    target=read_arduino,
+    daemon=True
+)
+
+thread.start()
+
+
+# ==============================
+# START PROGRAM
+# ==============================
+
+root.mainloop()
